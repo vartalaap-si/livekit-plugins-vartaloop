@@ -151,11 +151,21 @@ class _FakeMsg:
 class _FakeWS:
     """A Vartalaap server: every utterance message gets start, one PCM frame, end."""
 
-    def __init__(self, *, stale: bool = False, error: dict | None = None) -> None:
+    def __init__(
+        self, *, stale: bool = False, error: dict | None = None, stale_error: bool = False
+    ) -> None:
         self.sent: list[dict] = []
         self._queue: deque[_FakeMsg] = deque()
         self._has_msg = asyncio.Event()
         self.close_code = None
+        if stale_error:
+            # a late error of an utterance from before this stream
+            self._queue.append(
+                _FakeMsg.text(
+                    {"type": "error", "request_id": "old", "status": 503, "error": "busy"}
+                )
+            )
+            self._has_msg.set()
         if stale:
             # leftovers of an utterance from before this stream, as a pooled socket may carry
             self._queue.append(_FakeMsg.text({"type": "start", "request_id": "stale"}))
@@ -280,3 +290,79 @@ async def test_stream_bad_request_is_not_retryable():
             pass
     assert exc_info.value.status_code == 400
     assert exc_info.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_stream_ignores_a_stale_error_of_another_utterance():
+    from livekit.plugins.vartalaap import TTS
+
+    tts = TTS(api_key=SECRET_API_KEY)
+    tts._pool = _FakePool(_FakeWS(stale_error=True))  # type: ignore[assignment]
+
+    stream = tts.stream(conn_options=APIConnectOptions(max_retry=0, timeout=5.0))
+    stream.push_text("Hello there, how are you doing today?")
+    stream.end_input()
+
+    frames = [bytes(ev.frame.data) async for ev in stream]
+    assert b"".join(frames) == b"\x01" * (2 * 3840)
+
+
+@pytest.mark.asyncio
+async def test_update_options_applies_to_the_next_sentence_of_a_running_stream():
+    from livekit.plugins.vartalaap import TTS
+
+    tts = TTS(api_key=SECRET_API_KEY, voice="saanvi")
+    ws = _FakeWS()
+    tts._pool = _FakePool(ws)  # type: ignore[assignment]
+
+    stream = tts.stream(conn_options=APIConnectOptions(max_retry=0, timeout=5.0))
+    stream.push_text("First sentence of the reply, long enough. ")
+    # the tokenizer releases a sentence once the next one starts: this push sends the first
+    stream.push_text("Second sentence of the reply, long enough. ")
+    async with asyncio.timeout(5):
+        while not ws.sent:
+            await asyncio.sleep(0.01)
+    tts.update_options(voice="sahil", expression="excited")
+    stream.push_text("Third sentence of the reply, long enough.")
+    stream.end_input()
+    async for _ in stream:
+        pass
+
+    assert [m["voice"] for m in ws.sent] == ["saanvi", "sahil", "sahil"]
+    assert "style" not in ws.sent[0] and ws.sent[1]["style"] == "excited"
+
+
+@pytest.mark.asyncio
+async def test_stream_finishes_promptly_when_input_closes_after_the_last_end():
+    """The first sentence's audio has ended while the LLM is still producing text; closing
+    the input then must finish the stream at once, not after a receive timeout."""
+    import time
+
+    from livekit.plugins.vartalaap import TTS
+
+    tts = TTS(api_key=SECRET_API_KEY)
+    ws = _FakeWS()
+    tts._pool = _FakePool(ws)  # type: ignore[assignment]
+
+    stream = tts.stream(conn_options=APIConnectOptions(max_retry=0, timeout=5.0))
+    stream.push_text("First sentence of the reply, long enough. ")
+    stream.push_text("Second sentence of the reply, long enough. ")  # releases the first
+    async with asyncio.timeout(5):
+        while not ws.sent:
+            await asyncio.sleep(0.01)
+    await asyncio.sleep(0.2)  # the server has long sent its end event
+    t0 = time.perf_counter()
+    stream.end_input()  # the second sentence goes out now and ends
+    frames = [bytes(ev.frame.data) async for ev in stream]
+    assert time.perf_counter() - t0 < 2.0
+    assert len(ws.sent) == 2 and len(b"".join(frames)) == 4 * 3840
+
+
+def test_a_rejected_update_leaves_the_options_untouched():
+    from livekit.plugins.vartalaap import TTS
+
+    tts = TTS(api_key=SECRET_API_KEY, speed=1.2)
+    with pytest.raises(ValueError):
+        tts.update_options(speed=3.0, voice="sahil")
+    assert tts._opts.speed == 1.2
+    assert tts._opts.voice == "saanvi"
