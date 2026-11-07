@@ -1,0 +1,48 @@
+{
+ "throughput": [
+  {
+   "streams": 8,
+   "path": "ws/raw",
+   "utterances": 34,
+   "audio_s_per_wall_s": 22.96821333163805,
+   "rtf_per_stream_median": 0.3367559084089172,
+   "ttfa_p50_ms": 65.5035839881748,
+   "ttfa_p95_ms": 74.35720803914592,
+   "e2e_p50_ms": 4996.108624967746,
+   "wall_s": 22.139379875035957
+  },
+  {
+   "streams": 8,
+   "path": "ws/plugin",
+   "utterances": 32,
+   "audio_s_per_wall_s": 23.5772593885202,
+   "rtf_per_stream_median": 0.33652266677011955,
+   "ttfa_p50_ms": 72.1465420210734,
+   "ttfa_p95_ms": 81.33449999149889,
+   "e2e_p50_ms": 5054.010750027373,
+   "wall_s": 20.257485915964935
+  },
+  {
+   "streams": 16,
+   "path": "ws/raw",
+   "utterances": 48,
+   "audio_s_per_wall_s": 27.99061779313306,
+   "rtf_per_stream_median": 0.5670223495277837,
+   "ttfa_p50_ms": 81.76037500379607,
+   "ttfa_p95_ms": 102.8847920242697,
+   "e2e_p50_ms": 8479.152958025225,
+   "wall_s": 25.708042791986372
+  },
+  {
+   "streams": 16,
+   "path": "ws/plugin",
+   "utterances": 48,
+   "audio_s_per_wall_s": 28.36819600867576,
+   "rtf_per_stream_median": 0.5604468808916842,
+   "ttfa_p50_ms": 93.38824998121709,
+   "ttfa_p95_ms": 115.55991700151935,
+   "e2e_p50_ms": 8402.20029198099,
+   "wall_s": 25.467393124999944
+  }
+ ]
+}

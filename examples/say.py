@@ -1,16 +1,23 @@
 """Speak one Hinglish sentence with the plugin and write it to a WAV: the smallest possible check.
 
-    VARTALAAP_API_KEY=... python examples/say.py "नमस्ते, आपका loan approve हो गया है।" out.wav
+VARTALAAP_API_KEY=... python examples/say.py "नमस्ते, आपका loan approve हो गया है।" out.wav
 """
 
 import asyncio
 import sys
 import wave
 
+from livekit.agents.utils import http_context
 from livekit.plugins import vartalaap
 
 
 async def main(text: str, path: str) -> None:
+    # outside an agent job the plugin needs the shared http session opened by hand
+    async with http_context.open():
+        await speak(text, path)
+
+
+async def speak(text: str, path: str) -> None:
     tts = vartalaap.TTS(voice="saanvi")
     try:
         with wave.open(path, "wb") as w:

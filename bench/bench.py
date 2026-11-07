@@ -229,6 +229,11 @@ async def throughput(base: str, key: str, n: int, seconds: float, use_plugin: bo
                 if raw is not None:
                     await raw.close()
 
+        if tts is not None:
+            # warm: the pool opens connections one at a time under its lock, so N streams
+            # starting together would pay serialized handshakes; a plugin in production has
+            # its connections open before the burst (prewarm + reuse). One untimed round.
+            await asyncio.gather(*(plugin_stream(tts, ONE) for _ in range(n)))
         t0 = time.perf_counter()
         await asyncio.gather(*(worker(i) for i in range(n)))
         wall = time.perf_counter() - t0
@@ -284,22 +289,25 @@ async def main() -> None:
     ap.add_argument("--seconds", type=float, default=20.0)
     ap.add_argument("--json", default=None)
     ap.add_argument("--skip-throughput", action="store_true")
+    ap.add_argument("--only-throughput", action="store_true")
     args = ap.parse_args()
     key = os.environ.get("VARTALAAP_API_KEY")
     if not key:
         sys.exit("set VARTALAAP_API_KEY")
 
     print(f"# Vartalaap TTS bench — LiveKit plugin — {time.strftime('%Y-%m-%d %H:%M')} — {args.base_url}\n")
-    series = await latency(args.base_url.rstrip("/"), key, args.iters)
-    print(f"## Latency ({args.iters} interleaved iterations, warm)\n")
-    print(fmt_latency(series))
-    out: dict = {"latency": {k: [s.__dict__ for s in v.samples] for k, v in series.items()}}
+    out: dict = {}
+    if not args.only_throughput:
+        series = await latency(args.base_url.rstrip("/"), key, args.iters)
+        print(f"## Latency ({args.iters} interleaved iterations, warm)\n")
+        print(fmt_latency(series))
+        out["latency"] = {k: [s.__dict__ for s in v.samples] for k, v in series.items()}
     if not args.skip_throughput:
         rows = []
         for n in (int(x) for x in args.concurrency.split(",")):
             for use_plugin in (False, True):
                 rows.append(await throughput(args.base_url.rstrip("/"), key, n, args.seconds, use_plugin))
-        print(f"\n## Sustained throughput ({args.seconds:.0f} s per cell, 3-sentence text)\n")
+        print(f"\n## Sustained throughput ({args.seconds:.0f} s per cell, 3-sentence text, pool warmed)\n")
         print(fmt_throughput(rows))
         out["throughput"] = rows
     if args.json:
