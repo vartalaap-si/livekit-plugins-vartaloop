@@ -1,19 +1,19 @@
-# livekit-plugins-vartalaap
+# livekit-plugins-vartaloop
 
-[Vartalaap](https://vartalaap.si) text-to-speech for [LiveKit Agents](https://docs.livekit.io/agents/): Hinglish and
+[Vartaloop](https://vartaloop.ai) text-to-speech for [LiveKit Agents](https://docs.livekit.io/agents/): Hinglish and
 Indian-language voices (model `narad`), streamed from the first 80 ms frame. This repository is the development home of
-the plugin that ships in [livekit/agents](https://github.com/livekit/agents) as `livekit-plugins/livekit-plugins-vartalaap`.
+the plugin that ships in [livekit/agents](https://github.com/livekit/agents) as `livekit-plugins/livekit-plugins-vartaloop`.
 
 ```bash
-pip install livekit-plugins-vartalaap
-export VARTALAAP_API_KEY=vt_live_…        # from https://tts.vartaloop.ai
+pip install livekit-plugins-vartaloop
+export VARTALOOP_API_KEY=vt_live_…        # from https://tts.vartaloop.ai
 ```
 
 ```python
 from livekit.agents import AgentSession
-from livekit.plugins import vartalaap
+from livekit.plugins import vartaloop
 
-tts = vartalaap.TTS(voice="saanvi", expression="neutral", digits="auto")
+tts = vartaloop.TTS(voice="saanvi", expression="neutral", digits="auto")
 tts.prewarm()                               # open the WebSocket before the first turn
 session = AgentSession(stt=..., llm=..., tts=tts)
 ```
@@ -45,7 +45,7 @@ sentence without reconnecting.
 | `postfx` | server on | `postfx` | the loudness / high-pass / limiter chain |
 | `profile` | `default` | `profile` | `telephony` for 8 kHz mu-law delivery |
 | `raw` | `False` | `raw` | skip the normaliser |
-| `api_key` | `$VARTALAAP_API_KEY` | `Authorization: Bearer` | never logged; handshake errors are redacted |
+| `api_key` | `$VARTALOOP_API_KEY` | `Authorization: Bearer` | never logged; handshake errors are redacted |
 | `base_url` | `https://api.vartaloop.ai` | | |
 | `tokenizer` | `tokenize.basic.SentenceTokenizer()` | | ends sentences on `.?!` and the Devanagari danda |
 
@@ -98,9 +98,9 @@ Raw numbers: `bench/RESULTS.md`, `bench/RESULTS-throughput.md`, `bench/results*.
 
 ## Development
 
-The upstream layout is mirrored here (`livekit/plugins/vartalaap`, `tests/`). Lint and type-check as upstream does:
+The upstream layout is mirrored here (`livekit/plugins/vartaloop`, `tests/`). Lint and type-check as upstream does:
 
 ```bash
 ruff format . && ruff check . && mypy livekit
-pytest tests --plugin vartalaap     # inside the livekit/agents workspace
+pytest tests --plugin vartaloop     # inside the livekit/agents workspace
 ```

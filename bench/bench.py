@@ -1,6 +1,6 @@
-"""Latency and throughput of Vartalaap TTS: raw API vs the LiveKit plugin, from this machine.
+"""Latency and throughput of Vartaloop TTS: raw API vs the LiveKit plugin, from this machine.
 
-    VARTALAAP_API_KEY=... python bench/bench.py [--base-url https://api.vartaloop.ai] [--iters 8]
+    VARTALOOP_API_KEY=... python bench/bench.py [--base-url https://api.vartaloop.ai] [--iters 8]
                                                 [--concurrency 8,16] [--seconds 20] [--json out.json]
 
 Measures, with the same Hinglish texts for every path:
@@ -133,9 +133,9 @@ class RawWS:
 
 
 def _plugin():
-    from livekit.plugins import vartalaap
+    from livekit.plugins import vartaloop
 
-    return vartalaap
+    return vartaloop
 
 
 async def plugin_chunked(tts, text: str) -> Sample:
@@ -171,7 +171,7 @@ async def plugin_stream(tts, text: str) -> Sample:
 
 
 async def latency(base: str, key: str, iters: int) -> dict[str, Series]:
-    vartalaap = _plugin()
+    vartaloop = _plugin()
     series = {
         k: Series(k)
         for k in (
@@ -180,7 +180,7 @@ async def latency(base: str, key: str, iters: int) -> dict[str, Series]:
         )
     }
     async with aiohttp.ClientSession() as session:
-        tts = vartalaap.TTS(api_key=key, base_url=base, http_session=session)
+        tts = vartaloop.TTS(api_key=key, base_url=base, http_session=session)
         raw = RawWS(session, base, key)
         await raw.connect()
         tts.prewarm()
@@ -205,13 +205,13 @@ async def latency(base: str, key: str, iters: int) -> dict[str, Series]:
 
 
 async def throughput(base: str, key: str, n: int, seconds: float, use_plugin: bool) -> dict:
-    vartalaap = _plugin()
+    vartaloop = _plugin()
     three_sents = [s.strip() + "।" for s in THREE.split("।") if s.strip()]
     samples: list[Sample] = []
     stop = time.perf_counter() + seconds
 
     async with aiohttp.ClientSession() as session:
-        tts = vartalaap.TTS(api_key=key, base_url=base, http_session=session) if use_plugin else None
+        tts = vartaloop.TTS(api_key=key, base_url=base, http_session=session) if use_plugin else None
 
         async def worker(i: int) -> None:
             raw = None
@@ -283,7 +283,7 @@ def fmt_throughput(rows: list[dict]) -> str:
 
 async def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base-url", default=os.environ.get("VARTALAAP_BASE_URL", "https://api.vartaloop.ai"))
+    ap.add_argument("--base-url", default=os.environ.get("VARTALOOP_BASE_URL", "https://api.vartaloop.ai"))
     ap.add_argument("--iters", type=int, default=8)
     ap.add_argument("--concurrency", default="8,16")
     ap.add_argument("--seconds", type=float, default=20.0)
@@ -291,11 +291,11 @@ async def main() -> None:
     ap.add_argument("--skip-throughput", action="store_true")
     ap.add_argument("--only-throughput", action="store_true")
     args = ap.parse_args()
-    key = os.environ.get("VARTALAAP_API_KEY")
+    key = os.environ.get("VARTALOOP_API_KEY")
     if not key:
-        sys.exit("set VARTALAAP_API_KEY")
+        sys.exit("set VARTALOOP_API_KEY")
 
-    print(f"# Vartalaap TTS bench — LiveKit plugin — {time.strftime('%Y-%m-%d %H:%M')} — {args.base_url}\n")
+    print(f"# Vartaloop TTS bench — LiveKit plugin — {time.strftime('%Y-%m-%d %H:%M')} — {args.base_url}\n")
     out: dict = {}
     if not args.only_throughput:
         series = await latency(args.base_url.rstrip("/"), key, args.iters)

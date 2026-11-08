@@ -1,4 +1,4 @@
-# Vartalaap TTS bench — LiveKit plugin — 2026-11-08 01:53 — https://api.vartaloop.ai
+# Vartaloop TTS bench — LiveKit plugin — 2026-11-08 01:53 — https://api.vartaloop.ai
 
 ## Latency (8 interleaved iterations, warm)
 

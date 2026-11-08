@@ -1,11 +1,11 @@
-"""A LiveKit room agent that speaks Hinglish with Vartalaap.
+"""A LiveKit room agent that speaks Hinglish with Vartaloop.
 
-    export VARTALAAP_API_KEY=...   OPENAI_API_KEY=...   DEEPGRAM_API_KEY=...
+    export VARTALOOP_API_KEY=...   OPENAI_API_KEY=...   DEEPGRAM_API_KEY=...
     export LIVEKIT_URL=... LIVEKIT_API_KEY=... LIVEKIT_API_SECRET=...
     python examples/agent.py console      # local mic + speaker, no room needed
     python examples/agent.py dev          # connect to your LiveKit project
 
-The TTS is `vartalaap.TTS`: sentences stream to the API over one pooled WebSocket as the
+The TTS is `vartaloop.TTS`: sentences stream to the API over one pooled WebSocket as the
 LLM produces them, and the audio of each one plays as it arrives.
 """
 
@@ -14,10 +14,10 @@ import logging
 from dotenv import load_dotenv
 
 from livekit.agents import Agent, AgentServer, AgentSession, JobContext, cli
-from livekit.plugins import deepgram, openai, silero, vartalaap
+from livekit.plugins import deepgram, openai, silero, vartaloop
 
 load_dotenv()
-logger = logging.getLogger("vartalaap-agent")
+logger = logging.getLogger("vartaloop-agent")
 
 server = AgentServer()
 
@@ -31,7 +31,7 @@ server.setup_fnc = prewarm
 
 @server.rtc_session()
 async def entrypoint(ctx: JobContext):
-    tts = vartalaap.TTS(voice="saanvi", expression="neutral", digits="auto")
+    tts = vartaloop.TTS(voice="saanvi", expression="neutral", digits="auto")
     tts.prewarm()  # open the WebSocket now so the greeting does not pay the handshake
 
     session = AgentSession(
@@ -52,7 +52,7 @@ async def entrypoint(ctx: JobContext):
         ),
     )
 
-    await session.say("नमस्ते! मैं आपकी Vartalaap assistant हूँ। आज मैं आपकी कैसे help कर सकती हूँ?")
+    await session.say("नमस्ते! मैं आपकी Vartaloop assistant हूँ। आज मैं आपकी कैसे help कर सकती हूँ?")
 
 
 if __name__ == "__main__":
