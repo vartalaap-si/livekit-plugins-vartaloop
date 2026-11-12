@@ -10,7 +10,7 @@
     <main class="app">
       <header class="header">
         <h1>Vartaloop voice agent</h1>
-        <p class="sub">LiveKit · Deepgram STT · Claude · Vartaloop TTS</p>
+        <p class="sub">Speaks Hindi, Hinglish and English · LiveKit · Deepgram STT · Claude · Vartaloop TTS</p>
       </header>
 
       <!-- Connection state: text + a coloured dot. Driven from app.js. -->
@@ -30,13 +30,14 @@
       <section class="transcript-wrap">
         <h2 class="h2">Transcript</h2>
         <div id="transcript" class="transcript" aria-live="polite" aria-label="Conversation transcript">
-          <p class="hint">Press <strong>Connect &amp; talk</strong>, allow the microphone, then just speak.</p>
+          <p class="hint">Press <strong>Connect &amp; talk</strong>, allow the microphone, then just speak: Hindi, Hinglish or English.<br />
+            <span class="hint-example">Try “Mumbai ke baare mein do line mein batao” or “What can you do?”</span></p>
         </div>
       </section>
 
       <!-- Typed fallback for machines without a microphone. Goes to the same agent. -->
       <form id="text-form" class="text-form">
-        <input id="text-input" type="text" placeholder="…or type a message" autocomplete="off" disabled />
+        <input id="text-input" type="text" placeholder="…or type in Hindi, Hinglish or English" autocomplete="off" disabled />
         <button id="text-send" class="btn" type="submit" disabled>Send</button>
       </form>
 
