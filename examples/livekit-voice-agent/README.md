@@ -50,8 +50,11 @@ livekit-server --dev            # 1. the LiveKit server (skip with LiveKit Cloud
 ```
 
 ```bash
-python agent.py dev             # 2. the agent worker; "registered worker" means it is ready
+lk agent dev                    # 2. the agent worker; "registered worker" means it is ready
 ```
+
+`lk agent dev` (LiveKit CLI 2.19+, `brew install livekit-cli`) finds `agent.py`, uses the `.venv` and `.env` in this folder
+and hot-reloads on edits. `python agent.py dev` does the same without the CLI.
 
 ```bash
 python token_server.py          # 3. token server + web page on http://localhost:8080
@@ -62,14 +65,14 @@ joins the room and greets you in Sahil's voice. Say anything, for example:
 
 - *"What can you do?"*
 - *"Tell me about Mumbai in two sentences."*
-- *"मुझे एक joke सुनाओ"* (set `DEEPGRAM_LANGUAGE=hi` or `multi` first, see below)
+- *"मुझे एक joke सुनाओ"* or *"Mumbai ke baare mein do line mein batao"*
 
 The transcript panel shows your words as Deepgram hears them and the agent's reply as it is spoken. If you have no
 microphone, type in the box at the bottom: the message goes through the same LLM → TTS path.
 
 ### Try it without a browser
 
-`python agent.py console` runs the same agent against your laptop's microphone and speakers, no LiveKit server or
+`lk agent console` (or `python agent.py console`) runs the same agent against your laptop's microphone and speakers, no LiveKit server or
 token needed. Useful for a first smoke test of the keys.
 
 ## Configuration
@@ -80,10 +83,10 @@ Everything is an environment variable (`.env` is read on start-up; see [`.env.ex
 |---|---|---|
 | `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | `ws://localhost:7880` / `devkey` / `secret` | the `--dev` server's placeholder values; replace with your Cloud project's |
 | `DEEPGRAM_API_KEY` | — | required |
-| `DEEPGRAM_LANGUAGE` | `en` | `hi` for Hindi/Hinglish, `multi` for code-switching, `en-IN` for Indian English |
+| `DEEPGRAM_LANGUAGE` | `hi` | Hindi model; transcribes Hinglish with its English words (measured). `en` / `en-IN` for English-only callers. `multi` dropped a Hindi sentence in our test. |
 | `LLM_PROVIDER` | `anthropic` | `anthropic` (Claude) or `openai`; only that provider's key is needed |
 | `ANTHROPIC_API_KEY` | — | required when `LLM_PROVIDER=anthropic` |
-| `ANTHROPIC_MODEL` | `claude-haiku-5-5` | fastest first token (measured below); `claude-opus-5-5` for more depth |
+| `ANTHROPIC_MODEL` | `claude-opus-5-5` | best answers; `claude-haiku-5-5` for the fastest first token (measured below) |
 | `OPENAI_API_KEY` | — | required when `LLM_PROVIDER=openai` |
 | `OPENAI_MODEL` | `gpt-4o-mini` | any chat model; faster is better for voice |
 | `VARTALOOP_API_KEY` | — | required; from the Vartaloop portal |
@@ -93,16 +96,18 @@ Everything is an environment variable (`.env` is read on start-up; see [`.env.ex
 
 ### Hinglish
 
-The agent answers in whatever language the user speaks (the system prompt says so), but Deepgram has to *hear* Hindi
-first: set `DEEPGRAM_LANGUAGE=hi` (robust, also catches English words in Hindi sentences) or `multi` (nova-3's
-code-switching mode). Keep a Hinglish voice (`sahil`, `saanvi`, …); the English voices read Devanagari poorly.
+The agent answers in whatever language the user speaks (the system prompt says so). Deepgram's `hi` model, the default,
+hears Hinglish the way people speak it and writes it the way they type it: *"Mumbai के बारे में दो line में बताओ"*. It
+handled a pure-English question in the same session too. nova-3's `multi` mode dropped a plain Hindi sentence in our
+test, so use `hi` for Hinglish and `en` / `en-IN` only for English-only callers. Keep a Hinglish voice (`sahil`,
+`saanvi`, …); the English voices read Devanagari poorly.
 
 ## How the pieces talk to each other
 
 1. The browser asks `GET /token`. `token_server.py` signs a JWT with your LiveKit secret that allows joining one room
    (a fresh random room per visitor) and returns it with `LIVEKIT_URL`. The secret never reaches the browser.
 2. The browser connects, publishes its microphone, and registers a handler for the `lk.transcription` text-stream topic.
-3. The LiveKit server sees a new room and dispatches the worker (`python agent.py dev` registered it). The worker runs
+3. The LiveKit server sees a new room and dispatches the worker (`lk agent dev` registered it). The worker runs
    `entrypoint()`: builds the `AgentSession`, opens the Vartaloop WebSocket (`tts.prewarm()`), joins, and says the greeting.
 4. Each user turn: VAD detects end of speech → Deepgram returns the transcript → Claude (or OpenAI) streams a reply → the plugin
    cuts it into sentences and streams each to Vartaloop → 24 kHz PCM frames go onto the agent's audio track.
@@ -133,7 +138,8 @@ Measured on this machine against the live services (one spoken question, `python
 | LLM | time to first token (four runs) | 0.97–1.46 s | 1.72–2.22 s |
 | Vartaloop TTS | time to first byte | 74–89 ms | 131–175 ms |
 
-Both models gave the same answer. Haiku is the default because every tenth of a second here is silence the caller hears.
+Both models gave the same answer. Opus is the default for answer quality; with preemptive generation most of its extra
+first-token time overlaps the turn decision. Set `ANTHROPIC_MODEL=claude-haiku-5-5` when every tenth of a second counts.
 The LLM is the largest share of the gap; the turn detector and Vartaloop together add well under half a second.
 
 Every assistant turn logs one `turn metrics` line in the worker output with `llm_node_ttft`, `llm_node_ttfs` (first
@@ -151,12 +157,12 @@ Deepgram, the LLM and Vartaloop. Logs go to stdout.
 | symptom | cause and fix |
 |---|---|
 | Page connects but you hear nothing; a **Tap to enable audio** button appears | the browser's autoplay policy blocked audio that started without a click. Tap the button (it calls `room.startAudio()`). |
-| Agent never joins (status stays *waiting for the agent*) | `python agent.py dev` is not running, or points at a different `LIVEKIT_URL`/key than the token server. Both read the same `.env`. |
+| Agent never joins (status stays *waiting for the agent*) | `lk agent dev` is not running, or points at a different `LIVEKIT_URL`/key than the token server. Both read the same `.env`. |
 | `401` / `403` in the agent log mentioning `vartaloop` | wrong or missing `VARTALOOP_API_KEY`. `402` means the key has no credits. |
 | `401` from `api.deepgram.com`, `api.anthropic.com` or `openai` | the corresponding key is missing or invalid. |
 | Agent log: `429 … Your account is not active` from OpenAI | the key is valid but the OpenAI account has no active billing. Fix billing, or set `LLM_PROVIDER=anthropic`. |
 | Agent hears nothing you say | check the browser's mic permission and that **Mute mic** is not toggled. In the agent log, Deepgram should print interim transcripts as you speak. |
-| Hindi comes out as English nonsense | `DEEPGRAM_LANGUAGE` is `en`; set `hi` or `multi`. |
+| Hindi comes out as English nonsense, or a Hindi sentence is never transcribed | `DEEPGRAM_LANGUAGE` is `en` or `multi`; set `hi`. |
 | The agent interrupts itself | you are on speakers without echo cancellation; use headphones. The client requests `echoCancellation: true`, but some devices ignore it. |
 | `token server replied 500` | `LIVEKIT_API_KEY`/`LIVEKIT_API_SECRET` not set for `token_server.py`; it refuses to start without them. |
 | `livekit-server --dev` and the browser are on different machines | the browser must reach `LIVEKIT_URL` itself; use the server's LAN address or LiveKit Cloud. |

@@ -61,10 +61,11 @@ VOICE = os.getenv("VARTALOOP_VOICE", "sahil")
 #: Speaking rate, 0.5–2.0, pitch preserved. 1.1 is the showcase setting for ``sahil``.
 SPEED = float(os.getenv("VARTALOOP_SPEED", "1.1"))
 
-#: Deepgram language code. ``en`` for English; for Hinglish callers use ``hi`` (Hindi,
-#: also catches the English words) or ``multi`` (nova-3 code-switching). The agent's
-#: system prompt below should match: an English prompt with a ``hi`` STT reads oddly.
-DEEPGRAM_LANGUAGE = os.getenv("DEEPGRAM_LANGUAGE", "en")
+#: Deepgram language code. ``hi`` (default) is the Hindi model and it transcribes Hinglish
+#: the way people write it ("Mumbai के बारे में दो line में बताओ"), English sentences included.
+#: Measured: nova-3's ``multi`` mode dropped a plain Hindi sentence outright, so it is not the
+#: default. ``en`` or ``en-IN`` for English-only callers.
+DEEPGRAM_LANGUAGE = os.getenv("DEEPGRAM_LANGUAGE", "hi")
 
 #: Which LLM writes the replies: ``anthropic`` (Claude) or ``openai``. Both plugins stream
 #: tokens, so the first sentence reaches Vartaloop before the reply is finished either way.
@@ -72,11 +73,11 @@ DEEPGRAM_LANGUAGE = os.getenv("DEEPGRAM_LANGUAGE", "en")
 #: of silence for the caller, so pick a fast model and keep the prompt short.
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "anthropic").lower()
 
-#: Claude model for ``LLM_PROVIDER=anthropic``. ``claude-haiku-5-5`` is the default because a
-#: voice turn is latency-bound: measured time-to-first-token 1.0–1.35 s against 1.7–2.2 s for
-#: ``claude-opus-5-5`` on the same question (README, "Turn detection and latency"). Switch to
-#: Opus when the conversation needs more depth than speed.
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-5-5")
+#: Claude model for ``LLM_PROVIDER=anthropic``. ``claude-opus-5-5`` is the default: the best
+#: answers, and with preemptive generation most of its extra time-to-first-token is hidden.
+#: ``claude-haiku-5-5`` cuts measured time-to-first-token from 1.7–2.2 s to 1.0–1.5 s on the
+#: same question (README, "Turn detection and latency") when speed matters more than depth.
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-opus-5-5")
 
 #: OpenAI model for ``LLM_PROVIDER=openai``.
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")

@@ -15,7 +15,7 @@ from livekit.agents import APIConnectionError, APIConnectOptions, APIStatusError
 
 pytestmark = pytest.mark.plugin("vartaloop")
 
-SECRET_API_KEY = "vt_live_secret-api-key-do-not-log"
+SECRET_API_KEY = "vt_live_PLACEHOLDER_NOT_A_REAL_KEY_0000"
 
 
 def _handshake_error_with_api_key(api_key: str) -> WSServerHandshakeError:
