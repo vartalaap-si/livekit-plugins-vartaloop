@@ -26,6 +26,8 @@ RUN pip install -r requirements.txt
 
 COPY agent.py token_server.py entrypoint.sh ./
 COPY web ./web
+# The execute bit does not survive every checkout (zip downloads, some Windows clones).
+RUN chmod 0755 entrypoint.sh
 
 # Pre-download the VAD and turn-detector weights into the image.
 RUN python agent.py download-files
