@@ -3,7 +3,7 @@
 A complete, runnable voice assistant you can talk to from your browser:
 
 ```
-browser mic ─▶ LiveKit room ─▶ Silero VAD ─▶ Deepgram STT ─▶ OpenAI ─▶ Vartaloop TTS ─▶ browser speaker
+browser mic ─▶ LiveKit room ─▶ Silero VAD ─▶ Deepgram STT ─▶ Claude (or OpenAI) ─▶ Vartaloop TTS ─▶ browser speaker
 ```
 
 Three small pieces, all in this folder:
@@ -26,8 +26,8 @@ Default voice is `sahil` at speed 1.1 (Hinglish and Indian English); `kiara` and
     `livekit-server --dev`. It listens on `ws://localhost:7880` with API key `devkey` / secret `secret`.
   - **LiveKit Cloud**: a free project at [cloud.livekit.io](https://cloud.livekit.io); copy URL, key and secret from
     *Settings → Keys*.
-- API keys: [Vartaloop](https://tts.vartaloop.ai), [Deepgram](https://console.deepgram.com),
-  [OpenAI](https://platform.openai.com/api-keys).
+- API keys: [Vartaloop](https://tts.vartaloop.ai), [Deepgram](https://console.deepgram.com), and one LLM:
+  [Anthropic](https://console.anthropic.com) (default) or [OpenAI](https://platform.openai.com/api-keys).
 - A browser with a microphone (Chrome, Edge, Safari, Firefox).
 
 ## Run it (about 5 minutes)
@@ -81,7 +81,10 @@ Everything is an environment variable (`.env` is read on start-up; see [`.env.ex
 | `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | `ws://localhost:7880` / `devkey` / `secret` | the `--dev` server's placeholder values; replace with your Cloud project's |
 | `DEEPGRAM_API_KEY` | — | required |
 | `DEEPGRAM_LANGUAGE` | `en` | `hi` for Hindi/Hinglish, `multi` for code-switching, `en-IN` for Indian English |
-| `OPENAI_API_KEY` | — | required |
+| `LLM_PROVIDER` | `anthropic` | `anthropic` (Claude) or `openai`; only that provider's key is needed |
+| `ANTHROPIC_API_KEY` | — | required when `LLM_PROVIDER=anthropic` |
+| `ANTHROPIC_MODEL` | `claude-haiku-5-5` | fastest first token (measured below); `claude-opus-5-5` for more depth |
+| `OPENAI_API_KEY` | — | required when `LLM_PROVIDER=openai` |
 | `OPENAI_MODEL` | `gpt-4o-mini` | any chat model; faster is better for voice |
 | `VARTALOOP_API_KEY` | — | required; from the Vartaloop portal |
 | `VARTALOOP_VOICE` | `sahil` | `saanvi`, `meera`, `mahesh`, `ananya`, `arjun` (Hinglish / Indian English), `kiara`, `kevin` (English) |
@@ -101,10 +104,47 @@ code-switching mode). Keep a Hinglish voice (`sahil`, `saanvi`, …); the Englis
 2. The browser connects, publishes its microphone, and registers a handler for the `lk.transcription` text-stream topic.
 3. The LiveKit server sees a new room and dispatches the worker (`python agent.py dev` registered it). The worker runs
    `entrypoint()`: builds the `AgentSession`, opens the Vartaloop WebSocket (`tts.prewarm()`), joins, and says the greeting.
-4. Each user turn: VAD detects end of speech → Deepgram returns the transcript → the LLM streams a reply → the plugin
+4. Each user turn: VAD detects end of speech → Deepgram returns the transcript → Claude (or OpenAI) streams a reply → the plugin
    cuts it into sentences and streams each to Vartaloop → 24 kHz PCM frames go onto the agent's audio track.
 5. The agent publishes transcripts for both sides. User segments carry `lk.transcribed_track_id`; the client uses that
    to put them on the right. Segments update in place by `lk.segment_id`, so the agent's bubble grows as it speaks.
+
+## Turn detection and latency
+
+A voice agent feels fast when two things are short: the gap between the user's last word and the agent deciding the
+turn is over, and the gap from that decision to the first audio. `agent.py` sets both up deliberately:
+
+| stage | what is configured | why |
+|---|---|---|
+| end of speech | Silero VAD, `min_silence_duration=0.4` | first, cheap signal that the user paused |
+| end of turn | `TurnHandlingOptions(turn_detection=inference.TurnDetector(local_fallback=True), endpointing=EndpointingOptions(mode="dynamic", min_delay=0.3, max_delay=3.0))` | a small transformer reads the transcript so far and predicts whether the sentence is finished (English and Hindi). It waits `min_delay` 0.3 s when the turn is clearly over and up to `max_delay` 3 s when the user is mid-thought, so "I want to book a… " is not cut off. Hosted on LiveKit Cloud; the bundled local model elsewhere. |
+| STT | Deepgram `interim_results`, `no_delay`, `endpointing_ms=25` | partial transcripts stream in while the user is still speaking |
+| LLM start | `PreemptiveGenerationOptions(enabled=True)` | the LLM starts on the interim transcript while the turn detector is still deciding; a wrong guess is discarded, a right one hides most of the end-of-utterance delay |
+| LLM | Claude via `anthropic.LLM(max_tokens=300, caching="ephemeral")` | the system prompt is cached on Anthropic's side after the first turn; replies are bounded |
+| TTS | Vartaloop, `tts.prewarm()` | WebSocket opened before the greeting; each sentence streams as the LLM finishes it, first frame in tens of milliseconds |
+| barge-in | `InterruptionOptions(mode="vad", min_duration=0.4, resume_false_interruption=True)` | the user can talk over the agent; a cough does not leave silence |
+
+Measured on this machine against the live services (one spoken question, `python agent.py dev`, local `livekit-server`):
+
+| stage | metric | `claude-haiku-5-5` | `claude-opus-5-5` |
+|---|---|---|---|
+| turn detector | end-of-utterance delay, first turn | 0.42 s | 0.42 s |
+| turn detector + preemptive generation | end-of-utterance delay, later turns | 0.00 s | 0.00 s |
+| LLM | time to first token (four runs) | 0.97–1.46 s | 1.72–2.22 s |
+| Vartaloop TTS | time to first byte | 74–89 ms | 131–175 ms |
+
+Both models gave the same answer. Haiku is the default because every tenth of a second here is silence the caller hears.
+The LLM is the largest share of the gap; the turn detector and Vartaloop together add well under half a second.
+
+Every assistant turn logs one `turn metrics` line in the worker output with `llm_node_ttft`, `llm_node_ttfs` (first
+sentence), `tts_node_ttfb` and the end-of-turn delays, so you can see the effect of any change immediately.
+
+### Nothing touches disk in the hot path
+
+Everything a turn needs is in memory before the first word: the VAD and turn-detector weights are loaded once per worker
+process at start-up (`prewarm`), the Vartaloop WebSocket is opened before the greeting, the token server is stateless, and
+no request reads a file, a database or a cache. The only I/O during a conversation is the network traffic to LiveKit,
+Deepgram, the LLM and Vartaloop. Logs go to stdout.
 
 ## Troubleshooting
 
@@ -113,7 +153,8 @@ code-switching mode). Keep a Hinglish voice (`sahil`, `saanvi`, …); the Englis
 | Page connects but you hear nothing; a **Tap to enable audio** button appears | the browser's autoplay policy blocked audio that started without a click. Tap the button (it calls `room.startAudio()`). |
 | Agent never joins (status stays *waiting for the agent*) | `python agent.py dev` is not running, or points at a different `LIVEKIT_URL`/key than the token server. Both read the same `.env`. |
 | `401` / `403` in the agent log mentioning `vartaloop` | wrong or missing `VARTALOOP_API_KEY`. `402` means the key has no credits. |
-| `401` from `api.deepgram.com` or `openai` | the corresponding key is missing or invalid. |
+| `401` from `api.deepgram.com`, `api.anthropic.com` or `openai` | the corresponding key is missing or invalid. |
+| Agent log: `429 … Your account is not active` from OpenAI | the key is valid but the OpenAI account has no active billing. Fix billing, or set `LLM_PROVIDER=anthropic`. |
 | Agent hears nothing you say | check the browser's mic permission and that **Mute mic** is not toggled. In the agent log, Deepgram should print interim transcripts as you speak. |
 | Hindi comes out as English nonsense | `DEEPGRAM_LANGUAGE` is `en`; set `hi` or `multi`. |
 | The agent interrupts itself | you are on speakers without echo cancellation; use headphones. The client requests `echoCancellation: true`, but some devices ignore it. |
