@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vartaloop voice agent</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="header">
+        <h1>Vartaloop voice agent</h1>
+        <p class="sub">Speaks Hindi, Hinglish and English · LiveKit · Deepgram STT · Claude · Vartaloop TTS</p>
+      </header>
+
+      <!-- Connection state: text + a coloured dot. Driven from app.js. -->
+      <section class="status" aria-live="polite">
+        <span id="status-dot" class="dot dot-off" aria-hidden="true"></span>
+        <span id="status-text">Not connected</span>
+      </section>
+
+      <!-- Primary controls. Connect asks for a token, joins the room, enables the mic. -->
+      <section class="controls">
+        <button id="connect" class="btn btn-primary">Connect &amp; talk</button>
+        <button id="mute" class="btn" disabled>Mute mic</button>
+        <button id="disconnect" class="btn btn-ghost" disabled>Disconnect</button>
+      </section>
+
+      <!-- Transcript: one bubble per turn. User turns right, agent turns left. -->
+      <section class="transcript-wrap">
+        <h2 class="h2">Transcript</h2>
+        <div id="transcript" class="transcript" aria-live="polite" aria-label="Conversation transcript">
+          <p class="hint">Press <strong>Connect &amp; talk</strong>, allow the microphone, then just speak: Hindi, Hinglish or English.<br />
+            <span class="hint-example">Try “Mumbai ke baare mein do line mein batao” or “What can you do?”</span></p>
+        </div>
+      </section>
+
+      <!-- Typed fallback for machines without a microphone. Goes to the same agent. -->
+      <form id="text-form" class="text-form">
+        <input id="text-input" type="text" placeholder="…or type in Hindi, Hinglish or English" autocomplete="off" disabled />
+        <button id="text-send" class="btn" type="submit" disabled>Send</button>
+      </form>
+
+      <!-- Shown only when the browser refuses to auto-play the agent's audio. -->
+      <button id="unmute-audio" class="btn btn-warn hidden">Tap to enable audio</button>
+
+      <footer class="footer">
+        <p>
+          Audio from the agent plays through an element LiveKit attaches to this page.
+          Keys never reach the browser: the page only receives a short-lived room token.
+        </p>
+      </footer>
+    </main>
+
+    <!-- Pinned LiveKit JS SDK. Exposes the global `LivekitClient`. -->
+    <script src="https://cdn.jsdelivr.net/npm/livekit-client@2.23.0/dist/livekit-client.umd.min.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
