@@ -152,6 +152,24 @@ process at start-up (`prewarm`), the Vartaloop WebSocket is opened before the gr
 no request reads a file, a database or a cache. The only I/O during a conversation is the network traffic to LiveKit,
 Deepgram, the LLM and Vartaloop. Logs go to stdout.
 
+## Hosting it: a public demo billed to each visitor's own key
+
+The same two processes run the demo at [tts.vartaloop.ai/integration/livekit/demo](https://tts.vartaloop.ai/integration/livekit/demo),
+behind the portal sign-in. What changes compared to the laptop run, all through environment variables:
+
+| concern | setting | what it does |
+|---|---|---|
+| who pays for speech | the page POSTs `{"key": <the user's short-lived playground key>}` to `/token` | the token server checks the key against the Vartaloop API, encrypts it with `AGENT_SHARED_SECRET` (Fernet) into the agent-dispatch metadata, and the agent synthesises with it: the conversation is metered to that user's project. `ALLOW_ANONYMOUS=false` refuses tokens without a key. |
+| only our rooms | `AGENT_NAME=vartaloop-demo` on both processes | explicit dispatch: the worker joins only rooms whose token named it |
+| abuse | `TOKENS_PER_IP_PER_HOUR`, `MAX_SESSION_SECONDS` | per-address budget of conversations; a goodbye and room close after the cap |
+| page on a CDN, tokens elsewhere | `ALLOWED_ORIGINS`, `ROUTE_PREFIX`, `SERVE_STATIC=false`, `TRUST_X_FORWARDED_FOR` | CORS for the portal origin, routes under the prefix the load balancer forwards |
+| private TTS path | `VARTALOOP_BASE_URL` | the worker next to a Vartaloop server talks to it directly |
+
+`Dockerfile` builds one image for both processes (`entrypoint.sh agent` / `entrypoint.sh token`) with the VAD and
+turn-detector weights baked in, so a container starts with everything in memory. The Kubernetes manifest used in
+production is not part of this repository; the README of the deployment repo documents the Secret, the NEG and the
+load-balancer path rule.
+
 ## Troubleshooting
 
 | symptom | cause and fix |

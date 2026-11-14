@@ -11,3 +11,6 @@ livekit-plugins-vartaloop @ git+https://github.com/vartalaap-si/livekit-plugins-
 livekit-api==1.2.2
 aiohttp==3.14.5
 python-dotenv==1.2.4
+
+# Fernet encryption of a caller's Vartaloop key between token_server.py and agent.py (BYOK mode).
+cryptography==50.0.2

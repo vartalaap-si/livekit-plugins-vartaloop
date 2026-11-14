@@ -23,9 +23,12 @@ room automatically. Open the web client (see ``token_server.py``) to create a ro
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 
+from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
 from livekit.agents import (
     Agent,
@@ -61,6 +64,10 @@ VOICE = os.getenv("VARTALOOP_VOICE", "sahil")
 #: Speaking rate, 0.5–2.0, pitch preserved. 1.1 is the showcase setting for ``sahil``.
 SPEED = float(os.getenv("VARTALOOP_SPEED", "1.1"))
 
+#: Vartaloop API base. The public API by default; a deployment that sits next to a Vartaloop
+#: server can point this at it directly (same node or same network) and skip the public hop.
+VARTALOOP_BASE_URL = os.getenv("VARTALOOP_BASE_URL", "https://api.vartaloop.ai")
+
 #: Deepgram language code. ``hi`` (default) is the Hindi model and it transcribes Hinglish
 #: the way people write it ("Mumbai के बारे में दो line में बताओ"), English sentences included.
 #: Measured: nova-3's ``multi`` mode dropped a plain Hindi sentence outright, so it is not the
@@ -90,6 +97,26 @@ SYSTEM_PROMPT = os.getenv(
     "never use lists, markdown, emojis or URLs, and read numbers out as words. "
     "If the user speaks Hindi or Hinglish, reply in natural Hinglish (Hindi in "
     "Devanagari with everyday English words). Otherwise reply in English.",
+)
+
+#: Explicit dispatch name. Empty (local default): the worker joins every new room on the
+#: project. Set on a shared LiveKit project so it only joins rooms whose token asked for it
+#: (the token server's ``AGENT_NAME`` must match).
+AGENT_NAME = os.getenv("AGENT_NAME", "")
+
+#: Fernet key shared with the token server. When a conversation was started with a caller's
+#: own Vartaloop key (the portal's signed-in user), the key arrives encrypted in the job
+#: metadata and the TTS of that conversation is metered against the caller's credits.
+AGENT_SHARED_SECRET = os.getenv("AGENT_SHARED_SECRET", "")
+
+#: Hard cap on one conversation, in seconds. 0 = unlimited (local development). On a public
+#: demo URL this is what keeps a forgotten tab from running the STT and LLM meters all day.
+MAX_SESSION_SECONDS = int(os.getenv("MAX_SESSION_SECONDS", "0"))
+
+#: Spoken when the cap is reached, just before the room is closed.
+GOODBYE = os.getenv(
+    "AGENT_GOODBYE",
+    "That is all the time I have for this demo. Thanks for talking to me, bye!",
 )
 
 #: Spoken as soon as the user joins, so they hear the voice before they say anything.
@@ -135,12 +162,36 @@ def prewarm(proc: JobProcess) -> None:
 server.setup_fnc = prewarm
 
 
-@server.rtc_session()
+def caller_vartaloop_key(ctx: JobContext) -> str | None:
+    """The caller's own Vartaloop key from the dispatch metadata, or None for the worker's key."""
+    if not AGENT_SHARED_SECRET or not ctx.job.metadata:
+        return None
+    try:
+        meta = json.loads(ctx.job.metadata)
+        blob = meta.get("vartaloop_key")
+        if not blob:
+            return None
+        return Fernet(AGENT_SHARED_SECRET.encode()).decrypt(blob.encode()).decode()
+    except (ValueError, InvalidToken):
+        logger.warning("dispatch metadata present but unreadable; using the worker's own key")
+        return None
+
+
+@server.rtc_session(agent_name=AGENT_NAME)
 async def entrypoint(ctx: JobContext) -> None:
     """Called for every room the worker is dispatched to. One call == one conversation."""
-    logger.info("joining room %s with voice=%s speed=%s", ctx.room.name, VOICE, SPEED)
+    user_key = caller_vartaloop_key(ctx)
+    logger.info(
+        "joining room %s with voice=%s speed=%s byok=%s",
+        ctx.room.name,
+        VOICE,
+        SPEED,
+        bool(user_key),
+    )
 
     tts = vartaloop.TTS(
+        api_key=user_key,  # None -> the plugin falls back to $VARTALOOP_API_KEY
+        base_url=VARTALOOP_BASE_URL,
         voice=VOICE,
         speed=SPEED,
         expression="neutral",  # "excited", "sad", "whisper" on voices that carry them
@@ -208,6 +259,17 @@ async def entrypoint(ctx: JobContext) -> None:
 
     # ``say`` speaks fixed text without consulting the LLM.
     await session.say(GREETING)
+
+    if MAX_SESSION_SECONDS > 0:
+        # Say goodbye and close the room when the cap is reached. Deleting the room
+        # disconnects the browser too, so the page shows "Disconnected" rather than silence.
+        async def end_when_time_is_up() -> None:
+            await asyncio.sleep(MAX_SESSION_SECONDS)
+            logger.info("session cap of %ss reached in %s", MAX_SESSION_SECONDS, ctx.room.name)
+            await session.say(GOODBYE, allow_interruptions=False)
+            await ctx.delete_room()
+
+        asyncio.create_task(end_when_time_is_up())
 
 
 if __name__ == "__main__":

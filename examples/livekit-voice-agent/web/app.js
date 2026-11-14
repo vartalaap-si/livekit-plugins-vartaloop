@@ -119,8 +119,17 @@
   // -------------------------------------------------------------------------------------
   // Room lifecycle
   // -------------------------------------------------------------------------------------
+  /**
+   * Where to ask for a room token. Locally the page and token_server.py share an origin,
+   * so "/token" works. When the page is hosted on a CDN and the token server elsewhere,
+   * index.html sets <meta name="vartaloop-token-url" content="https://…/token">.
+   */
+  const TOKEN_URL =
+    document.querySelector('meta[name="vartaloop-token-url"]')?.content || "/token";
+
   async function fetchToken() {
-    const res = await fetch("/token");
+    const res = await fetch(TOKEN_URL);
+    if (res.status === 429) throw new Error("too many conversations from this network this hour, please try later");
     if (!res.ok) throw new Error(`token server replied ${res.status}`);
     return res.json(); // { url, token, room, identity }
   }
