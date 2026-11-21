@@ -13,7 +13,7 @@ import { STT } from '@livekit/agents-plugin-openai';
 import { tts as testTts } from '@livekit/agents-plugins-test';
 import { once } from 'node:events';
 import { type IncomingMessage, type ServerResponse, createServer } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { type AddressInfo, type Socket, createServer as createTcpServer } from 'node:net';
 import { describe, expect, it } from 'vitest';
 import { type WebSocket, WebSocketServer } from 'ws';
 import { TTS, type TTSOptions, _toVartaloopBody } from './tts.js';
@@ -782,6 +782,74 @@ describe('Vartaloop partial audio', () => {
     }
   });
 
+  it('reconnects after an error that is not tagged with an utterance', async () => {
+    const { wss, baseURL } = await startWebSocketServer();
+    let failed = false;
+    const server = serveVartaloop(wss, {
+      onUtterance: (ws) => {
+        if (failed) return true;
+        failed = true;
+        // The session's own error, not one utterance's: the socket must not be reused.
+        ws.send(JSON.stringify({ type: 'error', error: 'upstream closed', status: 500 }));
+        return false;
+      },
+    });
+
+    const vartaloop = new TTS({ apiKey: 'test-key', baseUrl: baseURL });
+    try {
+      const events = await synthesizeTurn(vartaloop, ['Ek hi vaakya.'], {
+        ...DEFAULT_API_CONNECT_OPTIONS,
+        maxRetry: 1,
+        retryIntervalMs: 0,
+      });
+
+      expect(server.connectionCount()).toBe(2);
+      expect(audioOf(events)).toHaveLength(2 * FRAME_BYTES);
+    } finally {
+      await vartaloop.close();
+      await closeWebSocketServer(wss);
+    }
+  });
+
+  it('retries a 503 of the only utterance in flight on the same socket', async () => {
+    const { wss, baseURL } = await startWebSocketServer();
+    let busy = true;
+    const server = serveVartaloop(wss, {
+      onUtterance: (ws, utterance) => {
+        if (busy) {
+          busy = false;
+          ws.send(
+            JSON.stringify({
+              type: 'error',
+              request_id: utterance.request_id,
+              error: 'all workers busy',
+              status: 503,
+            }),
+          );
+          return false;
+        }
+        return true;
+      },
+    });
+
+    const vartaloop = new TTS({ apiKey: 'test-key', baseUrl: baseURL });
+    try {
+      const events = await synthesizeTurn(vartaloop, ['Ek hi vaakya.'], {
+        ...DEFAULT_API_CONNECT_OPTIONS,
+        maxRetry: 1,
+        retryIntervalMs: 0,
+      });
+
+      // The server ended only the failed utterance: the retry reuses the healthy socket.
+      expect(server.connectionCount()).toBe(1);
+      expect(server.utterances.map((u) => u.text)).toEqual(['Ek hi vaakya.', 'Ek hi vaakya.']);
+      expect(audioOf(events)).toHaveLength(2 * FRAME_BYTES);
+    } finally {
+      await vartaloop.close();
+      await closeWebSocketServer(wss);
+    }
+  });
+
   it('keeps the segment id when a 503 before any audio is retried on a new socket', async () => {
     const { wss, baseURL } = await startWebSocketServer();
     const server = serveVartaloop(wss, {
@@ -796,6 +864,8 @@ describe('Vartaloop partial audio', () => {
               retry_after: 1,
             }),
           );
+          // and the socket goes, so the retry has to open a new one
+          ws.terminate();
           return false;
         }
         return true;
@@ -819,24 +889,23 @@ describe('Vartaloop partial audio', () => {
       stream.close();
 
       expect(server.connectionCount()).toBe(2);
-      // Both sentences on the first socket (the second one was queued behind the busy first),
-      // then both again on the second: the retry starts over because nothing was heard.
+      // The first sentence on the first socket (the second segment waits for the first one's
+      // audio), then both on the second: the retry starts over because nothing was heard.
       expect(server.utterances.map((u) => u.text)).toEqual([
         'Pehla vaakya yahan khatam hota hai.',
-        'Doosra vaakya bhi yahan khatam hota hai.',
         'Pehla vaakya yahan khatam hota hai.',
         'Doosra vaakya bhi yahan khatam hota hai.',
       ]);
 
-      // Audio once, from the retry (utterances 3 and 4), in two segments with stable ids:
+      // Audio once, from the retry (utterances 2 and 3), in two segments with stable ids:
       // the same two ids the first attempt reported, so the user-facing segment sequence is
       // unaffected by the retry.
       const audio = audioOf(events);
       expect(audio).toHaveLength(4 * FRAME_BYTES);
-      expect(audio.subarray(0, 2 * FRAME_BYTES).equals(Buffer.alloc(2 * FRAME_BYTES, 3))).toBe(
+      expect(audio.subarray(0, 2 * FRAME_BYTES).equals(Buffer.alloc(2 * FRAME_BYTES, 2))).toBe(
         true,
       );
-      expect(audio.subarray(2 * FRAME_BYTES).equals(Buffer.alloc(2 * FRAME_BYTES, 4))).toBe(true);
+      expect(audio.subarray(2 * FRAME_BYTES).equals(Buffer.alloc(2 * FRAME_BYTES, 3))).toBe(true);
       const segments = [...new Set(events.map((event) => event.segmentId))];
       expect(segments).toHaveLength(2);
       expect(events.filter((e) => e.final)).toHaveLength(2);
@@ -943,6 +1012,148 @@ describe('Vartaloop segment finality', () => {
     } finally {
       await vartaloop.close();
       await closeWebSocketServer(wss);
+    }
+  });
+});
+
+describe('Vartaloop metrics', () => {
+  it('emits metrics for every segment queued before any audio', async () => {
+    const { wss, baseURL } = await startWebSocketServer();
+    // Hold every reply for a moment, so both segments are queued before the server answers.
+    serveVartaloop(wss, {
+      onUtterance: (ws, utterance) => {
+        const requestId = utterance.request_id;
+        setTimeout(() => {
+          ws.send(JSON.stringify({ type: 'start', request_id: requestId, voice: utterance.voice }));
+          ws.send(Buffer.alloc(FRAME_BYTES, 1), { binary: true });
+          ws.send(Buffer.alloc(FRAME_BYTES, 1), { binary: true });
+          ws.send(JSON.stringify({ type: 'end', request_id: requestId, audio_s: 0.16 }));
+        }, 50);
+        return false;
+      },
+    });
+
+    const vartaloop = new TTS({ apiKey: 'test-key', baseUrl: baseURL });
+    const metrics: { charactersCount: number; audioDurationMs: number; ttfbMs: number }[] = [];
+    vartaloop.on('metrics_collected', (m) => metrics.push(m));
+    const first = 'Pehla vaakya yahan khatam hota hai.';
+    const second = 'Doosra vaakya bhi yahan khatam hota hai.';
+    try {
+      const stream = vartaloop.stream();
+      stream.pushText(first);
+      stream.flush();
+      stream.pushText(second);
+      stream.endInput();
+      const events: tts.SynthesizedAudio[] = [];
+      for await (const event of stream) {
+        if (event !== tts.SynthesizeStream.END_OF_STREAM) events.push(event);
+      }
+      stream.close();
+
+      expect(new Set(events.map((event) => event.segmentId)).size).toBe(2);
+      expect(metrics).toHaveLength(2);
+      expect(metrics.map((m) => m.charactersCount)).toEqual([first.length, second.length]);
+      expect(metrics.map((m) => m.audioDurationMs)).toEqual([160, 160]);
+      // Each segment's time to first byte is measured from its own send, not the first one's.
+      for (const m of metrics) {
+        expect(m.ttfbMs).toBeGreaterThanOrEqual(40);
+        expect(m.ttfbMs).toBeLessThan(1000);
+      }
+    } finally {
+      await vartaloop.close();
+      await closeWebSocketServer(wss);
+    }
+  });
+});
+
+describe('Vartaloop options while a segment waits', () => {
+  it('applies TTS- and stream-level updates made while the next segment waits', async () => {
+    const { wss, baseURL } = await startWebSocketServer();
+    // Hold the first utterance's reply until released, so the second segment is waiting.
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    let firstSeen!: () => void;
+    const firstUtterance = new Promise<void>((resolve) => (firstSeen = resolve));
+    const server = serveVartaloop(wss, {
+      onUtterance: (ws, utterance) => {
+        if (server.utterances.length !== 1) return true;
+        firstSeen();
+        const requestId = utterance.request_id;
+        void released.then(() => {
+          ws.send(JSON.stringify({ type: 'start', request_id: requestId, voice: utterance.voice }));
+          ws.send(Buffer.alloc(FRAME_BYTES, 1), { binary: true });
+          ws.send(JSON.stringify({ type: 'end', request_id: requestId, audio_s: 0.08 }));
+        });
+        return false;
+      },
+    });
+
+    const vartaloop = new TTS({ apiKey: 'test-key', baseUrl: baseURL });
+    try {
+      const stream = vartaloop.stream();
+      stream.pushText('Pehla vaakya yahan khatam hota hai.');
+      stream.flush();
+      stream.pushText('Doosra vaakya bhi yahan khatam hota hai.');
+      stream.endInput();
+      await waitFor(firstUtterance);
+      // Give the sender time to reach the second sentence and start waiting.
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(server.utterances).toHaveLength(1);
+
+      vartaloop.updateOptions({ voice: 'sahil' });
+      stream.updateOptions({ expression: 'sad' });
+      release();
+
+      for await (const event of stream) {
+        if (event === tts.SynthesizeStream.END_OF_STREAM) break;
+      }
+      stream.close();
+
+      expect(server.utterances).toHaveLength(2);
+      expect(server.utterances[0]).toMatchObject({ voice: 'saanvi' });
+      expect(server.utterances[0]).not.toHaveProperty('style');
+      expect(server.utterances[1]).toMatchObject({ voice: 'sahil', style: 'sad' });
+    } finally {
+      await vartaloop.close();
+      await closeWebSocketServer(wss);
+    }
+  });
+});
+
+describe('Vartaloop connection release', () => {
+  it('aborts a stalled prewarm handshake instead of waiting for the connect timeout', async () => {
+    // Accepts TCP and never answers the WebSocket upgrade. The key is unique, so the test watches
+    // its own socket and not a stray reconnect from an earlier test that reused the port.
+    const apiKey = `stall-${Math.random().toString(36).slice(2)}`;
+    const sockets: Socket[] = [];
+    let resolveOurs!: (socket: Socket) => void;
+    const ours = new Promise<Socket>((resolve) => (resolveOurs = resolve));
+    const server = createTcpServer((socket) => {
+      sockets.push(socket);
+      let head = '';
+      socket.on('data', (chunk) => {
+        head += chunk.toString('latin1');
+        if (head.includes(apiKey)) resolveOurs(socket);
+      });
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const { port } = server.address() as AddressInfo;
+
+    const vartaloop = new TTS({ apiKey, baseUrl: `http://127.0.0.1:${port}` });
+    try {
+      vartaloop.prewarm();
+      const socket = await waitFor(ours, 2000);
+      const closed: Promise<unknown> = socket.destroyed ? Promise.resolve() : once(socket, 'close');
+
+      const started = performance.now();
+      await waitFor(vartaloop.releaseIdleConnections(), 2000);
+      expect(performance.now() - started).toBeLessThan(1000);
+      await waitFor(closed, 1000);
+    } finally {
+      await vartaloop.close();
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 });
