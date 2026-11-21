@@ -539,12 +539,17 @@ class SynthesizeStream(tts.SynthesizeStream):
                     if ev_utt is not None and not ours:
                         # a late error of an utterance that is not ours (pooled socket leftover)
                         continue
-                    raise _status_error(
+                    err = _status_error(
                         int(data.get("status") or 500),
                         str(data.get("error", "unknown error")),
                         request_id=ev_utt or request_id,
                         retry_after=data.get("retry_after"),
                     )
+                    if not ours:
+                        raise err  # untagged: the session itself failed, drop the socket
+                    # the server ends only the failed utterance and keeps the session;
+                    # _run decides whether the socket can go back to the pool
+                    raise _UtteranceError(err)
 
                 if not ours:
                     # an event of an utterance that is not ours (left over on a pooled socket)
@@ -598,6 +603,7 @@ class SynthesizeStream(tts.SynthesizeStream):
                         await utils.aio.gracefully_cancel(w)
 
         try:
+            utterance_error: APIStatusError | None = None
             async with self._tts._pool.connection(timeout=self._conn_options.timeout) as ws:
                 self._acquire_time = self._tts._pool.last_acquire_time
                 self._connection_reused = self._tts._pool.last_connection_reused
@@ -608,10 +614,19 @@ class SynthesizeStream(tts.SynthesizeStream):
                 ]
                 try:
                     await asyncio.gather(*tasks)
+                except _UtteranceError as e:
+                    # stop the sender first: a sentence it sent meanwhile is still owed an
+                    # answer on this socket, which then must not serve the next stream
+                    await utils.aio.gracefully_cancel(*tasks)
+                    if len(pending) > 1:
+                        raise e.error from None
+                    utterance_error = e.error
                 finally:
                     sent_or_done.set()
                     await sent_tokenizer_stream.aclose()
                     await utils.aio.gracefully_cancel(*tasks)
+            if utterance_error is not None:
+                raise utterance_error
         except asyncio.TimeoutError:
             raise APITimeoutError() from None
         except aiohttp.ClientResponseError as e:
@@ -622,6 +637,14 @@ class SynthesizeStream(tts.SynthesizeStream):
             raise
         except Exception as e:
             raise APIConnectionError() from e
+
+
+class _UtteranceError(Exception):
+    """A server error that ended only its utterance: the stream fails, the socket is kept."""
+
+    def __init__(self, error: APIStatusError) -> None:
+        super().__init__(str(error))
+        self.error = error
 
 
 def _status_error(

@@ -21,10 +21,14 @@ import {
 import { AudioFrame } from '@livekit/rtc-node';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { type RawData, WebSocket } from 'ws';
 import type { TTSDigits, TTSExpressions, TTSModels, TTSProfiles, TTSVoices } from './models.js';
 
 const DEFAULT_BASE_URL = 'https://api.vartaloop.ai';
+// How the sender waits for the base stream's per-segment metrics mark (see sendTask).
+const METRICS_MARK_POLL_MS = 5;
+const METRICS_MARK_GRACE_MS = 200;
 const DEFAULT_MODEL: TTSModels = 'narad';
 const DEFAULT_VOICE: TTSVoices = 'saanvi';
 const API_KEY_ENV = 'VARTALOOP_API_KEY';
@@ -200,7 +204,7 @@ export class TTS extends tts.TTS {
     currentOptions.set(this, this.#opts);
 
     this.#pool = new ConnectionPool<WebSocket>({
-      connectCb: (timeoutMs) => this.#connectWebSocket(timeoutMs),
+      connectCb: (timeoutMs, signal) => this.#connectWebSocket(timeoutMs, signal),
       closeCb: async (ws) => safeCloseWebSocket(ws),
       maxSessionDuration: MAX_SESSION_DURATION_MS,
       markRefreshedOnGet: true,
@@ -271,7 +275,7 @@ export class TTS extends tts.TTS {
     await super.close();
   }
 
-  async #connectWebSocket(timeoutMs: number): Promise<WebSocket> {
+  async #connectWebSocket(timeoutMs: number, abortSignal?: AbortSignal): Promise<WebSocket> {
     // Snapshot the handshake inputs. If a concurrent updateOptions() changes one
     // of them while this connect is in flight, reconnect on the new value rather
     // than pooling a socket built on stale credentials.
@@ -281,6 +285,9 @@ export class TTS extends tts.TTS {
       url: `${baseUrl.replace(/^http/, 'ws')}/v1/tts/stream`,
       headers: authHeaders(apiKey),
       timeoutMs,
+      // The pool aborts this on releaseIdleConnections() and on a cancelled get(): settle the
+      // handshake now instead of holding its connect lock until the timeout.
+      abortSignal,
     });
     if (this.#closed) {
       safeCloseWebSocket(ws);
@@ -288,7 +295,7 @@ export class TTS extends tts.TTS {
     }
     if (apiKey !== this.#opts.apiKey || baseUrl !== this.#opts.baseUrl) {
       safeCloseWebSocket(ws);
-      return await this.#connectWebSocket(timeoutMs);
+      return await this.#connectWebSocket(timeoutMs, abortSignal);
     }
     // Drop a socket that closes (or errors) while idle in the pool, so the next turn does not
     // spend a retry on a dead one. The no-op error listener also keeps an idle 'error' from
@@ -580,6 +587,8 @@ export class SynthesizeStream extends tts.SynthesizeStream {
     // Set once the sender has nothing more to send (or the sender failed).
     let senderDone = false;
     let attemptOver = false;
+    // A server error that ended only its utterance: the turn fails, the socket is kept.
+    let utteranceError: APIStatusError | undefined;
     const SENDER_DONE = Symbol('SENDER_DONE');
     // Everything the receive loop reacts to: server messages, and the sender finishing.
     type Incoming = { data: RawData; isBinary: boolean } | typeof SENDER_DONE;
@@ -642,17 +651,52 @@ export class SynthesizeStream extends tts.SynthesizeStream {
         }
         return { id: (this.#segmentIds[index] ??= shortuuid()), index };
       };
+      // The base stream keeps one "segment started" mark and clears it when it emits a segment's
+      // metrics; a markStarted() made while an earlier segment still holds it is dropped. So the
+      // first sentence of a later (flush-delimited) segment waits until the earlier segment's
+      // metrics are out, then claims the mark itself. Sentences within a segment still pipeline.
+      // The wait is bounded: it ends on abort, a dead socket or a failed utterance, and allows a
+      // short grace once nothing of an earlier segment is pending (a segment with no audio never
+      // clears the mark).
+      let lastSentSegment = -1;
+      const waitForMetricsMark = async (ws: WebSocket, segmentIndex: number) => {
+        let idleSince: number | undefined;
+        while (this.startedTime !== undefined) {
+          if (this.abortController.signal.aborted || attemptOver || utteranceError || timedOut) {
+            return;
+          }
+          if (ws.readyState !== WebSocket.OPEN) return;
+          if (pending.some((p) => p.segmentIndex < segmentIndex)) {
+            idleSince = undefined;
+          } else {
+            idleSince ??= performance.now();
+            if (performance.now() - idleSince > METRICS_MARK_GRACE_MS) return;
+          }
+          await sleep(METRICS_MARK_POLL_MS);
+        }
+      };
       try {
         for await (const event of tokenizer) {
-          if (this.abortController.signal.aborted || attemptOver) break;
+          if (this.abortController.signal.aborted || attemptOver || utteranceError) break;
           const text = event.token.trim();
           if (!text) continue;
           const utteranceId = shortuuid();
-          const body = _toVartaloopBody(this.#utteranceOptions(), text, utteranceId);
           if (ws.readyState !== WebSocket.OPEN) {
             throw new APIConnectionError({ message: 'Vartaloop WebSocket closed mid-generation' });
           }
           const segment = stableSegment(event.segmentId || requestId);
+          if (lastSentSegment !== -1 && segment.index > lastSentSegment) {
+            await waitForMetricsMark(ws, segment.index);
+            if (this.abortController.signal.aborted || attemptOver || utteranceError) break;
+            if (ws.readyState !== WebSocket.OPEN) {
+              throw new APIConnectionError({
+                message: 'Vartaloop WebSocket closed mid-generation',
+              });
+            }
+          }
+          lastSentSegment = Math.max(lastSentSegment, segment.index);
+          // Built after any wait above, so an updateOptions() made meanwhile applies.
+          const body = _toVartaloopBody(this.#utteranceOptions(), text, utteranceId);
           pending.push({ utteranceId, segmentId: segment.id, segmentIndex: segment.index });
           this.markStarted();
           ws.send(JSON.stringify(body));
@@ -790,10 +834,16 @@ export class SynthesizeStream extends tts.SynthesizeStream {
             // Only our own utterance's error, or an untagged connection-level one, fails the
             // turn; an error left over from a previous turn on a pooled socket is dropped.
             if (event.request_id && event.request_id !== head?.utteranceId) continue;
-            throw statusError(event.status ?? 500, event.error ?? 'unknown error', {
+            const error = statusError(event.status ?? 500, event.error ?? 'unknown error', {
               requestId: event.request_id ?? requestId,
               retryAfter: event.retry_after,
             });
+            // Untagged: the session itself failed, so the socket is dropped.
+            if (!event.request_id) throw error;
+            // The server ends only the failed utterance and keeps the session; `run` decides
+            // below whether the socket can go back to the pool.
+            utteranceError = error;
+            throw new UtteranceError();
           }
 
           if (!head || event.request_id !== head.utteranceId) {
@@ -881,10 +931,22 @@ export class SynthesizeStream extends tts.SynthesizeStream {
             throw new APIConnectionError({ message: 'Vartaloop pooled websocket is not open' });
           }
           socket = ws;
-          await Promise.all([inputTask(), sendTask(ws), recvTask(ws)]);
+          const tasks = [inputTask(), sendTask(ws), recvTask(ws)];
+          try {
+            await Promise.all(tasks);
+          } catch (e) {
+            if (!(e instanceof UtteranceError)) throw e;
+            // Stop the sender first: a sentence it sent meanwhile is still owed an answer
+            // on this socket, which then must not serve the next turn.
+            attemptOver = true;
+            this.#wakeInputReaders();
+            await Promise.allSettled(tasks);
+            if (pending.length > 1) throw utteranceError;
+          }
         },
         { timeout: this.connOptions.timeoutMs, signal: this.abortSignal },
       );
+      if (utteranceError) throw utteranceError;
     } catch (e) {
       if (this.abortSignal.aborted) {
         return;
@@ -902,6 +964,9 @@ export class SynthesizeStream extends tts.SynthesizeStream {
     }
   }
 }
+
+// Ends the receive loop on an error that left the socket usable (see `utteranceError`).
+class UtteranceError extends Error {}
 
 // The same error, marked not retryable, for a failure after audio was already heard.
 const asFinalError = (error: APIError): APIError => {

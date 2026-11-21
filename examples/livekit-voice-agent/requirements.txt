@@ -1,10 +1,10 @@
-# Python 3.10+. Versions pinned to what this example was verified with (2026-11-12).
+# Python 3.10+. Versions pinned to what this example was verified with (2026-11-21).
 
 # LiveKit Agents framework plus the STT / LLM / VAD plugins used by agent.py.
-livekit-agents[anthropic,deepgram,openai,silero]==1.8.11
+livekit-agents[anthropic,deepgram,openai,silero]==1.8.13
 
 # Vartaloop TTS plugin. Installed from this repository until it is on PyPI; swap for
-# `livekit-plugins-vartaloop==1.8.11` once it is published.
+# `livekit-plugins-vartaloop==1.8.13` once it is published.
 livekit-plugins-vartaloop @ git+https://github.com/vartalaap-si/livekit-plugins-vartaloop@main
 
 # Token server: signs room tokens and serves web/.
